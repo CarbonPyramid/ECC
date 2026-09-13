@@ -68,7 +68,7 @@ function runTests() {
     test('below threshold (50% of 1M) stays completely silent', () => {
       const t = writeTranscript(500000);
       cleanup.push(t);
-      assert.strictEqual(run(inputFor(t), env), '');
+      assert.strictEqual(run(inputFor(t), { env }), '');
     })
   )
     passed++;
@@ -78,7 +78,7 @@ function runTests() {
     test('at 90% of 1M fires the order with UserPromptSubmit additionalContext', () => {
       const t = writeTranscript(905000);
       cleanup.push(t);
-      const out = JSON.parse(run(inputFor(t), env));
+      const out = JSON.parse(run(inputFor(t), { env }));
       assert.strictEqual(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
       assert.ok(out.hookSpecificOutput.additionalContext.includes('CONTEXT GATE TRIPPED'));
       assert.ok(out.hookSpecificOutput.additionalContext.includes('RESUME.md'));
@@ -93,7 +93,7 @@ function runTests() {
     test('at 97% of 1M escalates to EMERGENCY', () => {
       const t = writeTranscript(970000);
       cleanup.push(t);
-      const out = JSON.parse(run(inputFor(t), env));
+      const out = JSON.parse(run(inputFor(t), { env }));
       assert.ok(out.hookSpecificOutput.additionalContext.includes('EMERGENCY'));
       assert.ok(out.systemMessage.includes('EMERGENCY'));
     })
@@ -116,7 +116,7 @@ function runTests() {
 
   if (
     test('malformed stdin fails open to empty output', () => {
-      assert.strictEqual(run('not json', env), '');
+      assert.strictEqual(run('not json', { env }), '');
     })
   )
     passed++;
@@ -124,9 +124,9 @@ function runTests() {
 
   if (
     test('missing transcript path fails open to empty output', () => {
-      assert.strictEqual(run(JSON.stringify({ transcript_path: path.join(os.tmpdir(), 'ecc-context-gate-nope.jsonl') }), env), '');
-      assert.strictEqual(run(JSON.stringify({}), env), '');
-      assert.strictEqual(run('', env), '');
+      assert.strictEqual(run(JSON.stringify({ transcript_path: path.join(os.tmpdir(), 'ecc-context-gate-nope.jsonl') }), { env }), '');
+      assert.strictEqual(run(JSON.stringify({}), { env }), '');
+      assert.strictEqual(run('', { env }), '');
     })
   )
     passed++;
@@ -138,7 +138,7 @@ function runTests() {
     test('ECC_CONTEXT_GATE_PCT=0 disables the gate', () => {
       const t = writeTranscript(990000);
       cleanup.push(t);
-      assert.strictEqual(run(inputFor(t), { ECC_CONTEXT_GATE_PCT: '0' }), '');
+      assert.strictEqual(run(inputFor(t), { env: { ECC_CONTEXT_GATE_PCT: '0' } }), '');
     })
   )
     passed++;
@@ -148,7 +148,7 @@ function runTests() {
     test('ECC_CONTEXT_GATE_PCT=70 lowers the trigger', () => {
       const t = writeTranscript(750000);
       cleanup.push(t);
-      const out = JSON.parse(run(inputFor(t), { ECC_CONTEXT_GATE_PCT: '70' }));
+      const out = JSON.parse(run(inputFor(t), { env: { ECC_CONTEXT_GATE_PCT: '70' } }));
       assert.ok(out.hookSpecificOutput.additionalContext.includes('CONTEXT GATE TRIPPED'));
     })
   )
@@ -164,7 +164,7 @@ function runTests() {
       const original = process.env.ECC_CONTEXT_WINDOW_TOKENS;
       try {
         process.env.ECC_CONTEXT_WINDOW_TOKENS = '200000';
-        const out = JSON.parse(run(inputFor(t), env));
+        const out = JSON.parse(run(inputFor(t), { env }));
         assert.ok(out.systemMessage.includes('92%'));
       } finally {
         if (original === undefined) delete process.env.ECC_CONTEXT_WINDOW_TOKENS;
@@ -186,6 +186,41 @@ function runTests() {
     passed++;
   else failed++;
 
+  if (
+    test('resolvePct rejects partially numeric and non-decimal values', () => {
+      // parseInt would accept these ('90abc' → 90, '0x1' → 0, the latter
+      // silently disabling the gate); a whole decimal integer is required.
+      assert.strictEqual(resolvePct({ X: '90abc' }, 'X', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+      assert.strictEqual(resolvePct({ X: '0x1' }, 'X', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+      assert.strictEqual(resolvePct({ X: '9.5' }, 'X', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+      assert.strictEqual(resolvePct({ X: '-1' }, 'X', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+      assert.strictEqual(resolvePct({ X: '0' }, 'X', DEFAULT_GATE_PCT), 0);
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('registered runner path (metadata second arg) reads process.env overrides', () => {
+      // run-with-flags.js calls run(raw, { hookId, pluginRoot, ... }) — the
+      // second argument is runner metadata, not the environment. Overrides
+      // must still take effect from process.env in that path.
+      const t = writeTranscript(990000);
+      cleanup.push(t);
+      const original = process.env.ECC_CONTEXT_GATE_PCT;
+      try {
+        process.env.ECC_CONTEXT_GATE_PCT = '0';
+        const meta = { hookId: 'user-prompt:context-gate', pluginRoot: '/nonexistent', truncated: false };
+        assert.strictEqual(run(inputFor(t), meta), '');
+      } finally {
+        if (original === undefined) delete process.env.ECC_CONTEXT_GATE_PCT;
+        else process.env.ECC_CONTEXT_GATE_PCT = original;
+      }
+    })
+  )
+    passed++;
+  else failed++;
+
   for (const file of cleanup) {
     try {
       fs.unlinkSync(file);
@@ -194,7 +229,7 @@ function runTests() {
     }
   }
 
-  console.log(`\n${passed} passed, ${failed} failed\n`);
+  console.log(`\nResults: Passed: ${passed}, Failed: ${failed}\n`);
   if (failed > 0) process.exit(1);
 }
 

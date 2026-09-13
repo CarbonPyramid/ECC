@@ -59,7 +59,8 @@ const MAX_PCT = 100;
 function resolvePct(env, name, fallback) {
   const raw = env && env[name];
   if (raw !== undefined && raw !== null && raw !== '') {
-    const parsed = Number.parseInt(raw, 10);
+    if (!/^(?:0|[1-9]\d*)$/.test(String(raw).trim())) return fallback;
+    const parsed = Number(String(raw).trim());
     if (parsed === 0) return 0;
     if (Number.isInteger(parsed) && parsed >= MIN_PCT && parsed <= MAX_PCT) {
       return parsed;
@@ -114,11 +115,16 @@ function buildOrderText({ pct, tokens, windowTokens, inferred, emergency }) {
 
 /**
  * @param {string} rawInput - Raw JSON string from stdin
- * @param {object} [env] - Environment (injectable for tests)
+ * @param {object} [options] - Runner metadata from run-with-flags.js
+ *   ({ hookId, pluginRoot, ... }); tests may inject `options.env` to
+ *   override the process environment. Environment controls are always
+ *   read from `options.env || process.env` — never from the metadata
+ *   object itself.
  * @returns {string} Hook JSON output when the gate fires; '' otherwise.
  */
-function run(rawInput, env = process.env) {
+function run(rawInput, options = {}) {
   try {
+    const env = (options && options.env) || process.env;
     const gatePct = resolvePct(env, 'ECC_CONTEXT_GATE_PCT', DEFAULT_GATE_PCT);
     if (gatePct === 0) return '';
     const emergencyPct = resolvePct(env, 'ECC_CONTEXT_GATE_EMERGENCY_PCT', DEFAULT_EMERGENCY_PCT);
