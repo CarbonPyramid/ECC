@@ -112,6 +112,26 @@ function runTests() {
     passed++;
   else failed++;
 
+  if (
+    test('inferred window softens the order to a strong recommendation', () => {
+      // Unknown model at 185k → 200k window assumed (92%), but the true
+      // window could be larger, so the mandatory wording must drop.
+      const t = writeTranscript(185000, 'claude-unknown-experimental');
+      cleanup.push(t);
+      const out = JSON.parse(run(inputFor(t), { env }));
+      const text = out.hookSpecificOutput.additionalContext;
+      assert.ok(text.includes('CONTEXT GATE TRIPPED'));
+      assert.ok(!text.includes('an order, not a suggestion'));
+      assert.ok(text.includes('INFERRED'));
+      assert.ok(text.includes('strong recommendation'));
+      assert.ok(text.includes('RESUME.md'));
+      assert.ok(out.systemMessage.includes('strongly advised'));
+      assert.ok(!out.systemMessage.includes('ordered'));
+    })
+  )
+    passed++;
+  else failed++;
+
   console.log('\nrun() — safety:');
 
   if (

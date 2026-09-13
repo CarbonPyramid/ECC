@@ -21,10 +21,19 @@
  * - Advisory nudges repeat: once context is high, every turn re-raises the
  *   question. A gate fires once with a complete protocol instead.
  * - Compaction is lossy and automatic; a written checkpoint is curated and
- *   auditable. This hook is designed to pair with `autoCompactEnabled:
- *   false` (or a high `autoCompactWindow`) so the checkpoint always happens
- *   before any lossy summarization can — but it is safe with auto-compact
- *   left on (90% fires well before the default compaction point).
+ *   auditable. This hook REQUIRES pairing with `autoCompactEnabled: false`
+ *   (or a raised `autoCompactWindow`) to be reachable: with auto-compact
+ *   left on, compaction triggers around ~83.5% occupancy (the last ~16.5%
+ *   of the window is the auto-compact buffer — see AUTO_COMPACT_BUFFER_PCT
+ *   in ecc-statusline.js), which is before the 90% gate threshold, so the
+ *   gate would never fire. With auto-compact on the hook is harmless but
+ *   inert.
+ *
+ * Precedence over the advisory hooks: once occupancy reaches the gate
+ * threshold, suggest-compact and ecc-context-monitor suppress their
+ * /compact suggestions and context warnings (via isGateActive /
+ * isGateEnabled in lib/context-gate-state.js) so the model never receives
+ * contradictory instructions in the gate band.
  *
  * The gate deliberately re-fires on every prompt while above threshold —
  * that is the enforcement, not a defect: the order stands until the session
@@ -42,32 +51,7 @@
 'use strict';
 
 const { readLatestContextTokens, resolveContextWindow, formatWindowLabel } = require('../lib/transcript-context');
-
-const DEFAULT_GATE_PCT = 90;
-const DEFAULT_EMERGENCY_PCT = 96;
-const MIN_PCT = 1;
-const MAX_PCT = 100;
-
-/**
- * Resolve a percent setting from the environment.
- * `0` disables the gate entirely; invalid values fall back to the default.
- * @param {object} env
- * @param {string} name
- * @param {number} fallback
- * @returns {number}
- */
-function resolvePct(env, name, fallback) {
-  const raw = env && env[name];
-  if (raw !== undefined && raw !== null && raw !== '') {
-    if (!/^(?:0|[1-9]\d*)$/.test(String(raw).trim())) return fallback;
-    const parsed = Number(String(raw).trim());
-    if (parsed === 0) return 0;
-    if (Number.isInteger(parsed) && parsed >= MIN_PCT && parsed <= MAX_PCT) {
-      return parsed;
-    }
-  }
-  return fallback;
-}
+const { resolvePct, resolveGatePct, resolveEmergencyPct, DEFAULT_GATE_PCT, DEFAULT_EMERGENCY_PCT } = require('../lib/context-gate-state');
 
 /**
  * Build the checkpoint order injected as additionalContext.
@@ -81,9 +65,19 @@ function resolvePct(env, name, fallback) {
  */
 function buildOrderText({ pct, tokens, windowTokens, inferred, emergency }) {
   const windowLabel = formatWindowLabel(windowTokens);
+  // An inferred window means the true denominator may be larger (an
+  // unrecognized 1M-window model would read as 90% at 180k of an assumed
+  // 200k window). The protocol still fires — an unknown true-200k model at
+  // 90% is the exact case the gate exists for — but as a strong
+  // recommendation rather than an order, so a possibly-wrong denominator
+  // never forces a restart.
   const lines = [
-    `CONTEXT GATE TRIPPED (deterministic hook — this is an order, not a suggestion): context at ${pct}% ` +
-      `(${tokens.toLocaleString('en-US')} tokens of a ${windowLabel} window${inferred ? ', window size inferred' : ''}).`,
+    inferred
+      ? `CONTEXT GATE TRIPPED (deterministic hook): context at ~${pct}% of an INFERRED ${windowLabel} window ` +
+        `(${tokens.toLocaleString('en-US')} tokens; the true window may be larger — set ` +
+        'ECC_CONTEXT_WINDOW_TOKENS to correct it). Treat the following as a strong recommendation:'
+      : `CONTEXT GATE TRIPPED (deterministic hook — this is an order, not a suggestion): context at ${pct}% ` +
+        `(${tokens.toLocaleString('en-US')} tokens of a ${windowLabel} window).`,
     ''
   ];
 
@@ -125,9 +119,9 @@ function buildOrderText({ pct, tokens, windowTokens, inferred, emergency }) {
 function run(rawInput, options = {}) {
   try {
     const env = (options && options.env) || process.env;
-    const gatePct = resolvePct(env, 'ECC_CONTEXT_GATE_PCT', DEFAULT_GATE_PCT);
+    const gatePct = resolveGatePct(env);
     if (gatePct === 0) return '';
-    const emergencyPct = resolvePct(env, 'ECC_CONTEXT_GATE_EMERGENCY_PCT', DEFAULT_EMERGENCY_PCT);
+    const emergencyPct = resolveEmergencyPct(env);
 
     const input = rawInput && rawInput.trim() ? JSON.parse(rawInput) : {};
     const latest = readLatestContextTokens(input.transcript_path);
@@ -149,7 +143,8 @@ function run(rawInput, options = {}) {
     return JSON.stringify({
       systemMessage:
         `[context-gate] ${pct}% of ${formatWindowLabel(windowTokens)} window used` +
-        `${emergency ? ' (EMERGENCY)' : ''}. Claude has been ordered to reach a clean stopping point, ` +
+        `${inferred ? ' (window size inferred)' : ''}${emergency ? ' (EMERGENCY)' : ''}. ` +
+        `Claude has been ${inferred ? 'strongly advised' : 'ordered'} to reach a clean stopping point, ` +
         'write a checkpoint, and hand you a resume command for a fresh session.',
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',

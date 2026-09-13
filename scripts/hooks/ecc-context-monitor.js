@@ -14,6 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { sanitizeSessionId, readBridge, renameWithRetry } = require('../lib/session-bridge');
+const { resolveGatePct, isGateEnabled } = require('../lib/context-gate-state');
 
 const CONTEXT_WARNING_PCT = 35;
 const CONTEXT_CRITICAL_PCT = 25;
@@ -121,9 +122,18 @@ function detectLoop(recentTools) {
 function evaluateConditions(bridge, options = {}) {
   const warnings = [];
   const remaining = bridge.context_remaining_pct;
+  const env = options.env || process.env;
 
-  // Context warnings (skip if no context data)
-  if (remaining !== null && remaining !== undefined) {
+  // Defer to the context-gate inside its band: the critical message below
+  // ("ask the user ... do NOT autonomously save state or write handoff
+  // files") directly contradicts the gate's checkpoint order on the same
+  // turns. `remaining` here is Claude Code's native statusline percentage —
+  // a different denominator than the gate's transcript-token computation —
+  // so this comparison is an intentional approximation.
+  const gateOwnsBand = isGateEnabled(env) && remaining !== null && remaining !== undefined && remaining <= 100 - resolveGatePct(env);
+
+  // Context warnings (skip if no context data, or if the gate owns the band)
+  if (remaining !== null && remaining !== undefined && !gateOwnsBand) {
     if (remaining <= CONTEXT_CRITICAL_PCT) {
       warnings.push({
         severity: 3,

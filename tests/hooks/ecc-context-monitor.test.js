@@ -80,6 +80,43 @@ function runTests() {
     passed++;
   else failed++;
 
+  // evaluateConditions — context-gate deference
+  console.log('\nevaluateConditions (context-gate deference):');
+
+  if (
+    test('suppresses context warnings inside the context-gate band', () => {
+      // remaining 8% = 92% used, past the 90% gate threshold: the gate owns
+      // end-of-session messaging there and the critical "ask the user / do
+      // NOT write handoff files" text would contradict its checkpoint order.
+      const warnings = evaluateConditions({ context_remaining_pct: 8 }, { env: {} });
+      const ctx = warnings.find(w => w.type === 'context');
+      assert.strictEqual(ctx, undefined, 'Context warning must defer to the gate');
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('ECC_CONTEXT_GATE_PCT=0 restores context warnings in the band', () => {
+      const warnings = evaluateConditions({ context_remaining_pct: 8 }, { env: { ECC_CONTEXT_GATE_PCT: '0' } });
+      const ctx = warnings.find(w => w.type === 'context');
+      assert.ok(ctx, 'Expected the critical warning with the gate disabled');
+      assert.strictEqual(ctx.severity, 3);
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('non-context warnings still fire inside the gate band', () => {
+      const warnings = evaluateConditions({ context_remaining_pct: 8, total_cost_usd: 55 }, { env: {} });
+      assert.ok(warnings.find(w => w.type === 'cost'), 'Cost warning must be unaffected by gate deference');
+      assert.strictEqual(warnings.find(w => w.type === 'context'), undefined);
+    })
+  )
+    passed++;
+  else failed++;
+
   // evaluateConditions — cost warnings
   console.log('\nevaluateConditions (cost):');
 
@@ -341,7 +378,7 @@ function runTests() {
   else failed++;
 
   // Summary
-  console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
+  console.log(`\nResults: Passed: ${passed}, Failed: ${failed}\n`);
   return { passed, failed };
 }
 
