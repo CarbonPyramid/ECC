@@ -127,7 +127,7 @@ function run(rawInput, options = {}) {
     const latest = readLatestContextTokens(input.transcript_path);
     if (!latest) return '';
 
-    const { windowTokens, inferred } = resolveContextWindow(latest.tokens, latest.model);
+    const { windowTokens, inferred } = resolveContextWindow(latest.tokens, latest.model, env);
     const pct = Math.floor((latest.tokens / windowTokens) * 100);
     if (pct < gatePct) return '';
 

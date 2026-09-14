@@ -84,34 +84,92 @@ function runTests() {
   console.log('\nevaluateConditions (context-gate deference):');
 
   if (
-    test('suppresses context warnings inside the context-gate band', () => {
-      // remaining 8% = 92% used, past the 90% gate threshold: the gate owns
-      // end-of-session messaging there and the critical "ask the user / do
-      // NOT write handoff files" text would contradict its checkpoint order.
-      const warnings = evaluateConditions({ context_remaining_pct: 8 }, { env: {} });
+    test('suppresses context warnings when the gate is confirmed active', () => {
+      // The critical "ask the user / do NOT write handoff files" text would
+      // contradict the gate's checkpoint order on the same turns.
+      const warnings = evaluateConditions({ context_remaining_pct: 8 }, { gateActive: true });
       const ctx = warnings.find(w => w.type === 'context');
-      assert.strictEqual(ctx, undefined, 'Context warning must defer to the gate');
+      assert.strictEqual(ctx, undefined, 'Context warning must defer to the active gate');
     })
   )
     passed++;
   else failed++;
 
   if (
-    test('ECC_CONTEXT_GATE_PCT=0 restores context warnings in the band', () => {
-      const warnings = evaluateConditions({ context_remaining_pct: 8 }, { env: { ECC_CONTEXT_GATE_PCT: '0' } });
-      const ctx = warnings.find(w => w.type === 'context');
-      assert.ok(ctx, 'Expected the critical warning with the gate disabled');
-      assert.strictEqual(ctx.severity, 3);
+    test('keeps context warnings when gate activity is not confirmed', () => {
+      // gateActive false/absent covers gate disabled AND gate unable to
+      // evaluate (missing transcript) — the warning is the fallback.
+      for (const options of [{ gateActive: false }, {}, undefined]) {
+        const warnings = evaluateConditions({ context_remaining_pct: 8 }, options);
+        const ctx = warnings.find(w => w.type === 'context');
+        assert.ok(ctx, 'Expected the critical warning without confirmed gate activity');
+        assert.strictEqual(ctx.severity, 3);
+      }
     })
   )
     passed++;
   else failed++;
 
   if (
-    test('non-context warnings still fire inside the gate band', () => {
-      const warnings = evaluateConditions({ context_remaining_pct: 8, total_cost_usd: 55 }, { env: {} });
+    test('non-context warnings still fire while the gate is active', () => {
+      const warnings = evaluateConditions({ context_remaining_pct: 8, total_cost_usd: 55 }, { gateActive: true });
       assert.ok(warnings.find(w => w.type === 'cost'), 'Cost warning must be unaffected by gate deference');
       assert.strictEqual(warnings.find(w => w.type === 'context'), undefined);
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('run(): missing transcript keeps CONTEXT CRITICAL as the fallback', () => {
+      // The gate cannot evaluate usage without a transcript, so it emits
+      // nothing — the monitor must NOT go silent too (8% remaining with no
+      // guidance at all is the failure mode this guards against).
+      const sessionId = `ctx-monitor-gate-fallback-${process.pid}-${Date.now()}`;
+      const warnPath = path.join(os.tmpdir(), `ecc-ctx-warn-${sessionId}.json`);
+      const input = JSON.stringify({ session_id: sessionId, tool_name: 'Bash' });
+      try {
+        writeBridgeAtomic(sessionId, { context_remaining_pct: 8, last_timestamp: new Date().toISOString() });
+        const result = JSON.parse(run(input));
+        assert.ok(
+          result.hookSpecificOutput.additionalContext.includes('CONTEXT CRITICAL'),
+          'Critical warning must survive when the gate cannot evaluate usage'
+        );
+      } finally {
+        fs.rmSync(getBridgePath(sessionId), { force: true });
+        fs.rmSync(warnPath, { force: true });
+      }
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('run(): readable transcript in the gate band suppresses the context warning', () => {
+      const sessionId = `ctx-monitor-gate-active-${process.pid}-${Date.now()}`;
+      const warnPath = path.join(os.tmpdir(), `ecc-ctx-warn-${sessionId}.json`);
+      const transcript = path.join(os.tmpdir(), `ecc-ctx-monitor-transcript-${sessionId}.jsonl`);
+      // 190k of an assumed 200k window = 95% >= the 90% gate threshold.
+      fs.writeFileSync(
+        transcript,
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            model: 'claude-unknown-x',
+            usage: { input_tokens: 190000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 50 }
+          }
+        }) + '\n'
+      );
+      const input = JSON.stringify({ session_id: sessionId, tool_name: 'Bash', transcript_path: transcript });
+      try {
+        writeBridgeAtomic(sessionId, { context_remaining_pct: 8, last_timestamp: new Date().toISOString() });
+        const result = run(input);
+        assert.strictEqual(result, input, 'Monitor must defer to the confirmed-active gate');
+      } finally {
+        fs.rmSync(getBridgePath(sessionId), { force: true });
+        fs.rmSync(warnPath, { force: true });
+        fs.rmSync(transcript, { force: true });
+      }
     })
   )
     passed++;

@@ -12,6 +12,7 @@
 'use strict';
 
 const { isHookEnabled } = require('./hook-flags');
+const { readLatestContextTokens, resolveContextWindow } = require('./transcript-context');
 
 const DEFAULT_GATE_PCT = 90;
 const DEFAULT_EMERGENCY_PCT = 96;
@@ -94,8 +95,31 @@ function isGateActive({ tokens, windowTokens, env = process.env }) {
   return pct >= resolveGatePct(env);
 }
 
+/**
+ * True when the gate is CONFIRMED active for the given session transcript:
+ * gate enabled, transcript readable, usage resolved, and occupancy at/above
+ * the threshold. Returns false whenever the gate cannot evaluate usage
+ * (missing/unreadable transcript, no usage record) — callers use this to
+ * decide whether to defer to the gate, and a gate that cannot fire must
+ * never silence its fallbacks. Never throws.
+ * @param {string} transcriptPath
+ * @param {object} [env]
+ * @returns {boolean}
+ */
+function gateOwnsTranscript(transcriptPath, env = process.env) {
+  try {
+    const usage = readLatestContextTokens(transcriptPath);
+    if (!usage) return false;
+    const { windowTokens } = resolveContextWindow(usage.tokens, usage.model, env);
+    return isGateActive({ tokens: usage.tokens, windowTokens, env });
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   resolvePct,
+  gateOwnsTranscript,
   resolveGatePct,
   resolveEmergencyPct,
   isGateEnabled,

@@ -176,16 +176,31 @@ function runTests() {
   else failed++;
 
   if (
+    test('injected env window override reaches resolveContextWindow', () => {
+      // 185k on an unknown model would infer a 200k window (92%, gate
+      // fires); an injected 1M override must make it 18% and stay silent.
+      const t = writeTranscript(185000, 'claude-unknown-experimental');
+      cleanup.push(t);
+      assert.strictEqual(run(inputFor(t), { env: { ECC_CONTEXT_WINDOW_TOKENS: '1000000' } }), '');
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
     test('window override is honored (200k forced onto a fable transcript)', () => {
       const t = writeTranscript(185000);
       cleanup.push(t);
-      // 185k of 1M would be 18%; forced 200k window makes it 92%. The
-      // override is read from process.env by transcript-context.js.
+      // 185k of 1M would be 18%; forced 200k window makes it 92%.
+      // Injected form: options.env governs window resolution too.
+      const out = JSON.parse(run(inputFor(t), { env: { ECC_CONTEXT_WINDOW_TOKENS: '200000' } }));
+      assert.ok(out.systemMessage.includes('92%'));
+      // Registered-path form: metadata second arg falls back to process.env.
       const original = process.env.ECC_CONTEXT_WINDOW_TOKENS;
       try {
         process.env.ECC_CONTEXT_WINDOW_TOKENS = '200000';
-        const out = JSON.parse(run(inputFor(t), { env }));
-        assert.ok(out.systemMessage.includes('92%'));
+        const viaProcess = JSON.parse(run(inputFor(t), { hookId: 'user-prompt:context-gate' }));
+        assert.ok(viaProcess.systemMessage.includes('92%'));
       } finally {
         if (original === undefined) delete process.env.ECC_CONTEXT_WINDOW_TOKENS;
         else process.env.ECC_CONTEXT_WINDOW_TOKENS = original;

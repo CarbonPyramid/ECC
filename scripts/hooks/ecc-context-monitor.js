@@ -14,7 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { sanitizeSessionId, readBridge, renameWithRetry } = require('../lib/session-bridge');
-const { resolveGatePct, isGateEnabled } = require('../lib/context-gate-state');
+const { gateOwnsTranscript } = require('../lib/context-gate-state');
 
 const CONTEXT_WARNING_PCT = 35;
 const CONTEXT_CRITICAL_PCT = 25;
@@ -122,18 +122,18 @@ function detectLoop(recentTools) {
 function evaluateConditions(bridge, options = {}) {
   const warnings = [];
   const remaining = bridge.context_remaining_pct;
-  const env = options.env || process.env;
 
-  // Defer to the context-gate inside its band: the critical message below
-  // ("ask the user ... do NOT autonomously save state or write handoff
-  // files") directly contradicts the gate's checkpoint order on the same
-  // turns. `remaining` here is Claude Code's native statusline percentage —
-  // a different denominator than the gate's transcript-token computation —
-  // so this comparison is an intentional approximation.
-  const gateOwnsBand = isGateEnabled(env) && remaining !== null && remaining !== undefined && remaining <= 100 - resolveGatePct(env);
+  // Defer to the context-gate ONLY when the caller confirmed it is active
+  // (options.gateActive, resolved from the transcript by gateOwnsTranscript):
+  // the critical message below ("ask the user ... do NOT autonomously save
+  // state or write handoff files") directly contradicts the gate's checkpoint
+  // order on the same turns. A gate that cannot evaluate usage (missing or
+  // unreadable transcript) reports inactive, so this warning stays as the
+  // fallback and a low-context session is never left with no guidance.
+  const gateActive = options.gateActive === true;
 
-  // Context warnings (skip if no context data, or if the gate owns the band)
-  if (remaining !== null && remaining !== undefined && !gateOwnsBand) {
+  // Context warnings (skip if no context data, or if the gate is active)
+  if (remaining !== null && remaining !== undefined && !gateActive) {
     if (remaining <= CONTEXT_CRITICAL_PCT) {
       warnings.push({
         severity: 3,
@@ -239,7 +239,17 @@ function run(rawInput) {
     // If bridge is stale, null out context data (still check cost/scope/loop)
     const evalBridge = isStale ? { ...bridge, context_remaining_pct: null } : bridge;
 
-    const warnings = evaluateConditions(evalBridge, { costWarnings: costWarningsEnabled() });
+    // Gate deference needs the transcript (gateOwnsTranscript reads real
+    // usage, never the bridge approximation). Only pay that read when a
+    // context warning could actually fire.
+    const transcriptPath = typeof input.transcript_path === 'string' ? input.transcript_path : '';
+    const remainingPct = evalBridge.context_remaining_pct;
+    const contextWarningPossible = remainingPct !== null && remainingPct !== undefined && remainingPct <= CONTEXT_WARNING_PCT;
+
+    const warnings = evaluateConditions(evalBridge, {
+      costWarnings: costWarningsEnabled(),
+      gateActive: contextWarningPossible && gateOwnsTranscript(transcriptPath)
+    });
     if (warnings.length === 0) {
       // Clear dedupe state when the condition resolves, so the SAME warning text
       // recurring later (context dips, recovers, dips again; a loop that stops

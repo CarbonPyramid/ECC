@@ -40,7 +40,7 @@ const {
   computeContextBucket,
   formatWindowLabel
 } = require('../lib/transcript-context');
-const { isGateActive } = require('../lib/context-gate-state');
+const { isGateActive, gateOwnsTranscript } = require('../lib/context-gate-state');
 
 const COUNTER_FILE_PREFIX = 'claude-tool-count-';
 const CONTEXT_BUCKET_FILE_PREFIX = 'claude-context-bucket-';
@@ -160,23 +160,6 @@ function readLastContextBucket(bucketFile) {
 }
 
 /**
- * True when the context-gate owns the current transcript band (gate enabled
- * and occupancy at/above its threshold) — the tool-count /compact messages
- * must stay silent there too. Reads the transcript, so callers only invoke
- * it when a message would otherwise fire. Never throws.
- */
-function gateOwnsTranscript(transcriptPath, env) {
-  try {
-    const usage = readLatestContextTokens(transcriptPath);
-    if (!usage) return false;
-    const { windowTokens } = resolveContextWindow(usage.tokens, usage.model);
-    return isGateActive({ tokens: usage.tokens, windowTokens, env });
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Build the context-size suggestion when the transcript shows the session has
  * crossed into a new context bucket. Returns null when the signal is silent
  * (no transcript, below threshold, disabled, gate active, or already fired
@@ -190,9 +173,9 @@ function buildContextSuggestion(transcriptPath, bucketFile, env) {
     const usage = readLatestContextTokens(transcriptPath);
     if (!usage) return null;
 
-    const { windowTokens, inferred } = resolveContextWindow(usage.tokens, usage.model);
+    const { windowTokens, inferred } = resolveContextWindow(usage.tokens, usage.model, env);
 
-    // Defer to the context-gate above its threshold: the gate is ordering a
+    // Defer to the context-gate at/above its threshold: the gate is ordering a
     // checkpoint-and-restart there, and a /compact suggestion in the same
     // band is a contradictory instruction (compaction is the lossy path the
     // gate exists to preempt).
