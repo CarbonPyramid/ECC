@@ -41,7 +41,8 @@
  *
  * Controls:
  * - ECC_CONTEXT_GATE_PCT       gate threshold percent (default 90; 0 disables)
- * - ECC_CONTEXT_GATE_EMERGENCY_PCT  escalation percent (default 96)
+ * - ECC_CONTEXT_GATE_EMERGENCY_PCT  escalation percent (default 96; always
+ *   clamped to at least gate+1 so the two-tier order is preserved)
  * - ECC_CONTEXT_WINDOW_TOKENS / CLAUDE_CODE_AUTO_COMPACT_WINDOW  window
  *   override, honored by resolveContextWindow (transcript-context.js)
  * - Standard profile controls (ECC_HOOK_PROFILE, ECC_DISABLED_HOOKS) via
@@ -121,7 +122,12 @@ function run(rawInput, options = {}) {
     const env = (options && options.env) || process.env;
     const gatePct = resolveGatePct(env);
     if (gatePct === 0) return '';
-    const emergencyPct = resolveEmergencyPct(env);
+    // Emergency must sit in a strictly tighter band than the gate. Otherwise a
+    // gate threshold at or above the emergency default (e.g.
+    // ECC_CONTEXT_GATE_PCT=98 against the 96 default) makes every fire count as
+    // "emergency" and permanently skips step 1 — bringing in-flight work to a
+    // clean stopping point. Clamp so the two-tier order is always preserved.
+    const emergencyPct = Math.max(resolveEmergencyPct(env), gatePct + 1);
 
     const input = rawInput && rawInput.trim() ? JSON.parse(rawInput) : {};
     const latest = readLatestContextTokens(input.transcript_path);

@@ -74,6 +74,45 @@ test('resolvePct rejects partial and non-decimal values', () => {
   assert.strictEqual(resolvePct({ X: '150' }, 'X', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
 });
 
+/** Capture stderr writes while running fn(), restoring the original after. */
+function captureStderr(fn) {
+  const writes = [];
+  const orig = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = orig;
+  }
+  return writes.join('');
+}
+
+test('resolvePct warns once (to stderr) on a present-but-rejected value', () => {
+  // Unique name so the module-level one-time guard is fresh for this assertion.
+  const out = captureStderr(() => {
+    assert.strictEqual(resolvePct({ WARN_ONCE_A: '50.5' }, 'WARN_ONCE_A', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+    assert.strictEqual(resolvePct({ WARN_ONCE_A: '50.5' }, 'WARN_ONCE_A', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+    assert.strictEqual(resolvePct({ WARN_ONCE_A: 'abc' }, 'WARN_ONCE_A', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+  });
+  const hits = out.split('\n').filter((l) => l.includes('WARN_ONCE_A'));
+  assert.strictEqual(hits.length, 1, 'misconfiguration must be surfaced exactly once');
+  assert.ok(hits[0].includes('[context-gate]'));
+  assert.ok(hits[0].includes('50.5'));
+});
+
+test('resolvePct stays silent for valid, zero-disable, and unset values', () => {
+  const out = captureStderr(() => {
+    assert.strictEqual(resolvePct({ QUIET_OK: '85' }, 'QUIET_OK', DEFAULT_GATE_PCT), 85);
+    assert.strictEqual(resolvePct({ QUIET_ZERO: '0' }, 'QUIET_ZERO', DEFAULT_GATE_PCT), 0);
+    assert.strictEqual(resolvePct({}, 'QUIET_UNSET', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+    assert.strictEqual(resolvePct({ QUIET_BLANK: '   ' }, 'QUIET_BLANK', DEFAULT_GATE_PCT), DEFAULT_GATE_PCT);
+  });
+  assert.strictEqual(out.split('\n').filter((l) => l.includes('QUIET_')).length, 0);
+});
+
 // ── isGateEnabled ──
 
 test('enabled by default profile, disabled by threshold 0', () => {

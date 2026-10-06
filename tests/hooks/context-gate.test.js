@@ -176,6 +176,31 @@ function runTests() {
   else failed++;
 
   if (
+    test('gate >= emergency default clamps emergency above the gate (two-tier preserved)', () => {
+      // ECC_CONTEXT_GATE_PCT=98 with the 96 emergency default: without the
+      // clamp every fire (pct >= 98) would also be >= 96 and skip step 1.
+      // Clamp makes emergency 99, so 98% fires as a full order (step 1 kept)
+      // and only 99%+ escalates.
+      const gateEnv = { ECC_CONTEXT_GATE_PCT: '98' };
+      const at98 = writeTranscript(980000);
+      cleanup.push(at98);
+      const out98 = JSON.parse(run(inputFor(at98), { env: gateEnv }));
+      assert.ok(out98.hookSpecificOutput.additionalContext.includes('CONTEXT GATE TRIPPED'));
+      assert.ok(!out98.hookSpecificOutput.additionalContext.includes('EMERGENCY'));
+      assert.ok(out98.hookSpecificOutput.additionalContext.includes('Do NOT start any new work stream'));
+      assert.ok(!out98.systemMessage.includes('EMERGENCY'));
+
+      const at99 = writeTranscript(990000);
+      cleanup.push(at99);
+      const out99 = JSON.parse(run(inputFor(at99), { env: gateEnv }));
+      assert.ok(out99.hookSpecificOutput.additionalContext.includes('EMERGENCY'));
+      assert.ok(out99.systemMessage.includes('EMERGENCY'));
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
     test('injected env window override reaches resolveContextWindow', () => {
       // 185k on an unknown model would infer a 200k window (92%, gate
       // fires); an injected 1M override must make it 18% and stay silent.

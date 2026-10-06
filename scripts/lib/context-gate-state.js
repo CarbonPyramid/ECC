@@ -23,11 +23,40 @@ const MAX_PCT = 100;
 const GATE_HOOK_ID = 'user-prompt:context-gate';
 const GATE_HOOK_PROFILES = 'standard,strict';
 
+/** Env names already warned about this process — keeps the note one-time. */
+const warnedEnvNames = new Set();
+
+/**
+ * Emit a one-time stderr note that an env override was present but rejected.
+ * Deduped per env name so the gate re-firing on every prompt (and multiple
+ * hooks resolving the same setting) cannot turn this into a spam stream.
+ * Never throws — a logging failure must not change threshold resolution.
+ * @param {string} name
+ * @param {*} raw
+ * @param {number} fallback
+ */
+function warnRejected(name, raw, fallback) {
+  if (warnedEnvNames.has(name)) return;
+  warnedEnvNames.add(name);
+  try {
+    process.stderr.write(
+      `[context-gate] ignoring invalid ${name}="${raw}" ` +
+      `(expected a whole integer 0-100); using default ${fallback}.\n`
+    );
+  } catch {
+    /* stderr unavailable — resolution still returns the deterministic fallback */
+  }
+}
+
 /**
  * Resolve a percent setting from the environment.
  * `0` disables the gate entirely; invalid values fall back to the default.
  * A whole decimal integer is required — parseInt-style partial parses
  * ('90abc' -> 90, '0x1' -> 0) would silently shift or disable the gate.
+ * When an override is PRESENT but rejected (e.g. a typo'd '50.5' or '150'),
+ * the return stays the deterministic fallback, but a one-time stderr note
+ * surfaces the misconfiguration so a silently re-armed default gate — which
+ * orders session restarts — does not go unnoticed.
  * @param {object} env
  * @param {string} name
  * @param {number} fallback
@@ -36,12 +65,18 @@ const GATE_HOOK_PROFILES = 'standard,strict';
 function resolvePct(env, name, fallback) {
   const raw = env && env[name];
   if (raw !== undefined && raw !== null && raw !== '') {
-    if (!/^(?:0|[1-9]\d*)$/.test(String(raw).trim())) return fallback;
-    const parsed = Number(String(raw).trim());
-    if (parsed === 0) return 0;
-    if (Number.isInteger(parsed) && parsed >= MIN_PCT && parsed <= MAX_PCT) {
-      return parsed;
+    const str = String(raw).trim();
+    // A whitespace-only value is treated as unset: silent fallback, no note.
+    if (str === '') return fallback;
+    if (/^(?:0|[1-9]\d*)$/.test(str)) {
+      const parsed = Number(str);
+      if (parsed === 0) return 0;
+      if (Number.isInteger(parsed) && parsed >= MIN_PCT && parsed <= MAX_PCT) {
+        return parsed;
+      }
     }
+    // Present but unparseable or out of range: deterministic fallback + one note.
+    warnRejected(name, raw, fallback);
   }
   return fallback;
 }
